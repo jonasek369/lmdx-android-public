@@ -70,7 +70,7 @@ class MainActivity : AppCompatActivity() {
             "manga"
         ).build()
 
-
+        println("Manga Database path on phoen -> ${getDatabasePath("manga")}")
 
         connection = MangaDexConnection(database)
 
@@ -122,7 +122,7 @@ class MainActivity : AppCompatActivity() {
                 if(query.isNullOrEmpty())
                     return false
 
-                val job = lifecycleScope.launch  {
+                lifecycleScope.launch  {
                     val mangas = connection.searchManga(query, 5) ?: return@launch
 
                     val mangaViewsDeferred = mangas.map { manga ->

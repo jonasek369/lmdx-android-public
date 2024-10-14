@@ -10,7 +10,7 @@
 
     <androidx.constraintlayout.widget.ConstraintLayout
         android:layout_width="match_parent"
-        android:layout_height="wrap_content"
+        android:layout_height="match_parent"
         android:orientation="horizontal"
         android:padding="5dp">
 
@@ -22,6 +22,16 @@
             android:src="@drawable/outline_remove_red_eye_24"
             app:layout_constraintStart_toStartOf="parent"
             app:layout_constraintTop_toTopOf="parent" />
+
+        <ImageView
+            android:id="@+id/groupIcon"
+            android:layout_width="24dp"
+            android:layout_height="24dp"
+            android:layout_marginStart="8dp"
+            android:layout_marginTop="8dp"
+            android:src="@drawable/baseline_group_24"
+            app:layout_constraintStart_toStartOf="parent"
+            app:layout_constraintTop_toBottomOf="@+id/mangaSeen" />
 
         <TextView
             android:id="@+id/mangaTitle"
@@ -48,6 +58,17 @@
             app:layout_constraintBottom_toBottomOf="@+id/mangaSeen"
             app:layout_constraintStart_toEndOf="@+id/mangaSeen"
             app:layout_constraintTop_toTopOf="@+id/mangaSeen" />
+
+        <TextView
+            android:id="@+id/mangaScanlationGroup"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="8dp"
+            android:layout_marginTop="8dp"
+            android:layout_weight="1"
+            android:text="Default Scanlation Group"
+            app:layout_constraintStart_toEndOf="@+id/groupIcon"
+            app:layout_constraintTop_toBottomOf="@+id/mangaChapterNumber" />
 
         <TextView
             android:id="@+id/mangaSeparator"

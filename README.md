@@ -5,7 +5,7 @@ Local Mangadex is a project I've been working on for a while. I started this pro
 Even though the basic functions, such as downloading (mostly) and reading, work, it still has a lot of issues and many things lacking in the feature set. I would welcome anyone who tries this app out and finds a bug to create an issue.
 
 ## Roadmap
-- [ ] Comply with Usage Policy
+- [x] Comply with Usage Policy
 - [ ] Make manga downloading background with notification (something as spotify)
   - [ ] Background downloading
   - [ ] Notification

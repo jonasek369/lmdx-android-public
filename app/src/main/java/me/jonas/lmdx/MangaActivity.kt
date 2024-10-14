@@ -38,7 +38,8 @@ data class Chapter(
     val prevChapter: String?,
     val nextChapter: String?,
     val viewed: Boolean,
-    val pages: Int
+    val pages: Int,
+    val scanlationGroup:String
 )
 
 
@@ -53,6 +54,7 @@ class ChapterAdapter(
         private val mangaTitle: TextView = itemView.findViewById(R.id.mangaTitle)
         private val mangaChapterNumber: TextView = itemView.findViewById(R.id.mangaChapterNumber)
         private val mangaSeparator: TextView = itemView.findViewById(R.id.mangaSeparator)
+        private val scanlationGroupText: TextView = itemView.findViewById(R.id.mangaScanlationGroup)
 
 
         fun bind(chapter: Chapter) {
@@ -72,6 +74,7 @@ class ChapterAdapter(
                 mangaSeparator.visibility = View.GONE
             }
             mangaChapterNumber.text = "Ch. ${chapter.chapterNumber.toString()}"
+            scanlationGroupText.text = "${chapter.scanlationGroup}"
 
             itemView.setOnClickListener{
                 onItemClick.invoke(chapter)
@@ -200,7 +203,8 @@ class MangaActivity : AppCompatActivity() {
             var chapterInfo: ChapterInfo;
             try{
                 // try to get current chapterinfo from api and save it to database as the newest one
-                chapterInfo = ChapterInfo(mangaId, connection.getChapterList(mangaId).toString())
+                val fromApi = connection.getChapterList(mangaId).toString()
+                chapterInfo = ChapterInfo(mangaId, fromApi)
                 database.chapterInfoDao.setChapterInfo(chapterInfo)
             }catch (e: Exception){
                 // if it fails get from database
@@ -213,12 +217,13 @@ class MangaActivity : AppCompatActivity() {
             var prevChapterId: String? = null
             var nextChapterId: String? = null
             val chaptersJson = Json.parseToJsonElement(chapterInfo.jsonData).jsonArray
-
             val viewedChapters = getReadInfo(mangaId)
 
             for(chapter in chaptersJson.withIndex()){
                 val chapterObject = chapter.value.jsonObject
                 val chapterId = chapterObject["id"].toString().trim('"')
+
+                var scanlationGroup = ""
                 if(chapterId !in dbChapters){
                     continue
                 }
@@ -227,7 +232,12 @@ class MangaActivity : AppCompatActivity() {
                 } else {
                     null
                 }
-
+                for(relationship in chapterObject["relationships"]?.jsonArray!!){
+                    if(jsonElementToString(relationship.jsonObject["type"]) != "scanlation_group"){
+                        continue
+                    }
+                    scanlationGroup = jsonElementToString(relationship.jsonObject["attributes"]?.jsonObject?.get("name"))
+                }
 
                 chapters.add(
                     Chapter(
@@ -243,7 +253,8 @@ class MangaActivity : AppCompatActivity() {
                         },
                         prevChapter = prevChapterId,
                         nextChapter = nextChapterId,
-                        pages = chapterObject["attributes"]?.jsonObject?.get("pages").toString().trim('"').toInt()
+                        pages = chapterObject["attributes"]?.jsonObject?.get("pages").toString().trim('"').toInt(),
+                        scanlationGroup = scanlationGroup
                     )
                 )
                 prevChapterId = chapterId

@@ -175,7 +175,8 @@ class MangaDexConnection(mangaDb: MangaDatabase? = null) {
 
     private fun getDefaultRequestParameters(): JsonElement {
         // default parameters for every mangadex api request
-        return Json.parseToJsonElement("""{"contentRating[]": ["safe", "suggestive", "erotic"]}""")
+        // """{"contentRating[]": ["safe", "suggestive", "erotic"]}"""
+        return Json.parseToJsonElement("""{}""")
     }
 
     private fun getRequest(
@@ -259,6 +260,7 @@ class MangaDexConnection(mangaDb: MangaDatabase? = null) {
                 }
             }
             val metadataJson = Json.parseToJsonElement(metadata.body())
+            println("metadata = $metadataJson")
             val hash =
                 metadataJson.jsonObject["chapter"]?.jsonObject?.get("hash")!!.toString().trim('"')
             val baseUrl = metadataJson.jsonObject["baseUrl"]!!.toString().trim('"')
@@ -454,6 +456,7 @@ class MangaDexConnection(mangaDb: MangaDatabase? = null) {
                 defaultParams["limit"] = JsonPrimitive(100)
                 defaultParams["offset"] = JsonPrimitive(offset)
                 defaultParams["translatedLanguage[]"] = Json.encodeToJsonElement(languages)
+                defaultParams["includes[]"] = Json.encodeToJsonElement(listOf("scanlation_group"))
 
                 val response = getRequest("$API_URL/chapter", defaultParams)
 
