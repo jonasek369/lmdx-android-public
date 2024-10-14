@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<menu xmlns:android="http://schemas.android.com/apk/res/android"
+
+    >
+    <item
+        android:title="Profile"
+        android:icon="@drawable/baseline_person_24"
+        android:id="@+id/profile_nav_menu"/>
+    <item
+        android:title="Library"
+        android:icon="@drawable/baseline_menu_book_24"
+        android:id="@+id/library_nav_menu"/>
+    <item
+        android:title="Downloader"
+        android:icon="@drawable/baseline_download_24"
+        android:id="@+id/downloader_nav_menu"/>
+    <item
+        android:title="Releases"
+        android:icon="@drawable/baseline_new_releases_24"
+        android:id="@+id/updates_nav_menu"/>
+</menu>
