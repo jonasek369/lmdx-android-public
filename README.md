@@ -7,5 +7,5 @@ Even though the basic functions, such as downloading (mostly) and reading, work,
 ## Roadmap
 - [x] Comply with Usage Policy
 - [ ] Make manga downloading background with notification (something as spotify)
-  - [ ] Background downloading
+  - [x] Background downloading
   - [ ] Notification

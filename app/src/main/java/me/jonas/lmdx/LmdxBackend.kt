@@ -1,9 +1,24 @@
 package me.jonas.lmdx
 
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
+import android.app.Service
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.os.Build
+import android.os.IBinder
+import android.text.BoringLayout
 import android.widget.ProgressBar
 import android.widget.TextView
+import androidx.core.app.NotificationCompat
+import androidx.localbroadcastmanager.content.LocalBroadcastManager
+import androidx.room.Room
 import io.ktor.client.HttpClient
 import io.ktor.client.call.body
 import io.ktor.client.engine.cio.CIO
@@ -19,6 +34,8 @@ import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
@@ -254,7 +271,7 @@ class MangaDexConnection(mangaDb: MangaDatabase? = null) {
                     ?: 1 // This should always be supplied by the api
             val retryAfter = metadata.headers["X-RateLimit-Retry-After"]?.toFloat() ?: 0 // <--|
             if (remainingRequests <= 0) {
-                println("Rate limit reached")
+                println("Rate limit reached retry after $retryAfter")
                 if (rateLimitCallback != null && !rateLimitCallback.invoke(retryAfter as Float)) {
                     return@runBlocking null
                 }
@@ -645,16 +662,296 @@ class UserInfoObject(passedDatabase: MangaDatabase) {
 }
 
 
-class DownloadManager(
-    passedDatabase: MangaDatabase,
-    downloaderAdapter: DownloaderAdapter? = null
-) {
-    var jobs: MutableList<Pair<String, Job>> = mutableListOf()
+class DownloaderQueue {
+    var jobs: MutableList<String> = mutableListOf()
     var uiElements: HashMap<String, Pair<ProgressBar, TextView>> = hashMapOf()
+    var currentlyWorkingOn: String? = null
+
+    companion object {
+        @Volatile
+        private var instance: DownloaderQueue? = null
+
+        fun getInstance(): DownloaderQueue {
+            if (instance == null) {
+                synchronized(DownloaderQueue::class.java) {
+                    if (instance == null) {
+                        instance = DownloaderQueue()
+                    }
+                }
+            }
+            return instance!!
+        }
+    }
+
+    fun poll(): String? {
+        return jobs.firstOrNull()
+    }
+
+    fun removeDownload(mangaIdentifier: String, context: Context) {
+        for (job in jobs.withIndex()) {
+            if (job.value == mangaIdentifier) {
+                jobs.removeAt(job.index)
+            }
+        }
+        if(currentlyWorkingOn == mangaIdentifier){
+            println("cancelling cwo!")
+            val intent = Intent("DownloaderState")
+            intent.putExtra("identifier", mangaIdentifier)
+            LocalBroadcastManager.getInstance(context).sendBroadcast(intent)
+            println("send broadcast to end")
+        }
+    }
+
+    fun addDownload(mangaId: String): Boolean{
+        if(mangaId == currentlyWorkingOn)
+            return false
+        for(job in jobs){
+            if(job == mangaId){
+                return false
+            }
+        }
+        println("adding job!")
+        jobs.add(mangaId)
+        println(jobs)
+        return true
+    }
+}
+
+class DownloadService : Service() {
+
+    private val CHANNEL_ID = "DownloadServiceChannel"
+    private val scope = CoroutineScope(Dispatchers.IO)
+
+    private lateinit var connection: MangaDexConnection
+    private lateinit var database: MangaDatabase
+    private lateinit var downloadScope: CoroutineScope
+
+    private var queue = DownloaderQueue.getInstance()
+    private var isServiceRunning = false
+    private var interruptDownload = mutableListOf<String>()
+
+
+    private val stateReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            println("recieved $intent")
+            intent?.getStringExtra("identifier")?.let {
+                if(it !in interruptDownload ){
+                    println("adding $it to interrupts")
+                    interruptDownload.add(it)
+                }
+            }
+        }
+    }
+
+
+    override fun onCreate() {
+        super.onCreate()
+        database = Room.databaseBuilder(
+            applicationContext,
+            MangaDatabase::class.java,
+            "manga"
+        ).build()
+        connection = MangaDexConnection(database)
+
+
+        LocalBroadcastManager.getInstance(this)
+            .registerReceiver(stateReceiver, IntentFilter("DownloaderState"))
+
+        downloadScope = CoroutineScope(Dispatchers.IO + Job())
+        startForeground(1, createNotification("Waiting for downloads..."))
+
+        // Start the background loop
+        startBackgroundLoop()
+    }
+
+    private fun startBackgroundLoop() {
+        isServiceRunning = true
+        downloadScope.launch {
+            while (isServiceRunning) {
+                if(!queue.currentlyWorkingOn.isNullOrEmpty()){
+                    delay(1000L)
+                    continue
+                }
+                val job = queue.poll() // Poll once, then work with the result
+                if (!job.isNullOrEmpty()) {
+                    println("found job")
+                    downloadManga(job)
+                } else {
+                    delay(1000L) // Sleep for 1 second if there's no job
+                }
+            }
+        }
+    }
+
+    private fun notifyProgress(mangaIdentifier: String) {
+        val intent = Intent("DownloadProgress")
+        intent.putExtra("identifier", mangaIdentifier)
+        intent.putExtra("finished", false)
+        LocalBroadcastManager.getInstance(this).sendBroadcast(intent)
+    }
+
+    private fun notifyFinish(mangaIdentifier: String) {
+        val intent = Intent("DownloadProgress")
+        intent.putExtra("identifier", mangaIdentifier)
+        intent.putExtra("finished", true)
+        println("calling finish!")
+        LocalBroadcastManager.getInstance(this).sendBroadcast(intent)
+    }
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        createNotificationChannel()
+        val notification = createNotification("Downloading...")
+        startForeground(1, notification)
+
+        /*val mangaIdentifier = intent?.getStringExtra("identifier") ?: return START_NOT_STICKY
+        println("Starting service!")
+        downloadManga(mangaIdentifier)*/
+        startBackgroundLoop()
+
+        return START_STICKY
+    }
+
+    private fun createNotification(content: String): Notification {
+        val intent = Intent(this, MainActivity::class.java)
+        val pendingIntent = PendingIntent.getActivity(
+            this,
+            0,
+            intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        return NotificationCompat.Builder(this, CHANNEL_ID)
+            .setContentTitle("Download Service")
+            .setContentText(content)
+            .setSmallIcon(android.R.drawable.stat_sys_download)
+            .setContentIntent(pendingIntent)
+            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+            .build()
+    }
+
+    private fun createNotificationChannel() {
+        val serviceChannel = NotificationChannel(
+            CHANNEL_ID,
+            "Download Service Channel",
+            NotificationManager.IMPORTANCE_DEFAULT
+        )
+        val manager = getSystemService(NotificationManager::class.java)
+        manager.createNotificationChannel(serviceChannel)
+    }
+
+    private fun downloadManga(mangaIdentifier: String) {
+        scope.launch {
+            try {
+                queue.currentlyWorkingOn = mangaIdentifier
+                queue.jobs.remove(mangaIdentifier)
+                downloadChapters(mangaIdentifier).let {
+                    notifyFinish(mangaIdentifier)
+                }
+                queue.currentlyWorkingOn = null
+            } catch (e: Exception) {
+                println(e.message)
+            }
+        }
+
+    }
+
+
+    private suspend fun downloadChapters(mangaIdentifier: String) {
+        withContext(Dispatchers.IO) {
+            val chapterList = connection.getChapterList(mangaIdentifier)
+
+            for (chapter in chapterList.withIndex()) {
+                if(mangaIdentifier in interruptDownload){
+                    interruptDownload.remove(mangaIdentifier)
+                    println("breaking download of $mangaIdentifier")
+                    break
+                }
+                val chapterIdentifier = chapter.value.jsonObject["id"].toString().trim('"')
+                val dbPages = database.mangaDao.getPages(chapterIdentifier)
+
+                val shouldSkip = database.recordDao.getRecord(chapterIdentifier)?.let {
+                    it.pages == dbPages.size
+                } ?: false
+
+                if (shouldSkip) {
+                    val progress = (chapter.index * 100 / chapterList.size)
+                    withContext(Dispatchers.Main) {
+                        val uiElement = queue.uiElements[mangaIdentifier] ?: return@withContext
+                        uiElement.first.progress = progress
+                        uiElement.second.text = "$progress%"
+                    }
+                    notifyProgress(mangaIdentifier)
+                    println("Skipping chapter in database")
+                    continue
+                }
+                var shouldExitDownload = false
+                val downloadedPages =
+                    connection.downloadMangaPages(chapterIdentifier, dbPages, false) {
+                        println("Warning: hit the rate limit! Sleeping for $it seconds")
+                        val startTime = System.currentTimeMillis()
+                        val waitTime = (it + 5) * 1000 // wait time in milliseconds
+                        var currentTime = System.currentTimeMillis()
+                        while (currentTime - startTime < waitTime) {
+                            if(mangaIdentifier in interruptDownload){
+                                shouldExitDownload = true
+                                break
+                            }
+                            currentTime = System.currentTimeMillis()
+                        }
+
+                        true
+                    }
+                if(shouldExitDownload){
+                    // the check will be performed next iteration
+                    continue
+                }
+                if (downloadedPages.isNullOrEmpty()) {
+                    println("Could not download $chapterIdentifier")
+                    continue
+                }
+
+                val infoIdentifier = database.infoDao.getInfoIdentifier(mangaIdentifier)
+                for (page in downloadedPages) {
+                    database.mangaDao.setManga(
+                        Manga(
+                            identifier = chapterIdentifier,
+                            page = page.first,
+                            data = page.second,
+                            infoId = infoIdentifier
+                        )
+                    )
+                }
+
+                val progress = (chapter.index * 100 / chapterList.size)
+                withContext(Dispatchers.Main) {
+                    val uiElement = queue.uiElements[mangaIdentifier] ?: return@withContext
+                    uiElement.first.progress = progress
+                    uiElement.second.text = "$progress%"
+                }
+                notifyProgress(mangaIdentifier)
+            }
+        }
+    }
+
+    override fun onDestroy() {
+        println("turning off service!")
+        LocalBroadcastManager.getInstance(this).unregisterReceiver(stateReceiver)
+        super.onDestroy()
+        scope.cancel() // Cancel all coroutines
+    }
+
+    override fun onBind(intent: Intent?): IBinder? {
+        return null
+    }
+}
+
+
+/*class DownloadManager(passedDatabase: MangaDatabase) {
+
+    private var queue: DownloaderQueue = DownloaderQueue.getInstance()
 
     private var connection: MangaDexConnection
     private var database: MangaDatabase
-    private var adapter: DownloaderAdapter?
 
     companion object {
         @Volatile
@@ -675,20 +972,13 @@ class DownloadManager(
     init {
         connection = MangaDexConnection(passedDatabase)
         database = passedDatabase
-        adapter = downloaderAdapter
     }
 
-    fun setAdapter(passedAdapter: DownloaderAdapter?) {
-        if (passedAdapter != null) {
-            for (item in passedAdapter.downloadsList) {
-                for (job in jobs.withIndex()) {
-                    if (job.value.first == item && job.value.second.isCompleted) {
-                        passedAdapter.onFinish(job.value.first)
-                    }
-                }
-            }
-        }
-        adapter = passedAdapter
+    private fun notifyProgress(mangaIdentifier: String, progress: Int){
+        val intent = Intent("DownloadProgress")
+        intent.putExtra("mangaIdentifier", mangaIdentifier)
+        intent.putExtra("progress", progress)
+        LocalBroadcastManager.getInstance(this).sendBroadcast(intent)
     }
 
 
@@ -697,23 +987,23 @@ class DownloadManager(
             try {
                 downloadChapters(mangaIdentifier)
                 withContext(Dispatchers.Main) {
-                    val uiElement = uiElements[mangaIdentifier] ?: return@withContext
+                    val uiElement = queue.uiElements[mangaIdentifier] ?: return@withContext
                     uiElement.first.progress = 100
                     uiElement.second.text = "Finished"
                 }
-                adapter?.onFinish(mangaIdentifier)
+                // adapter?.onFinish(mangaIdentifier)
             } catch (e: Exception) {
                 println(e.message)
             }
         }
-        jobs.add(Pair(mangaIdentifier, job))
+        queue.jobs.add(Pair(mangaIdentifier, job))
     }
 
     fun removeDownload(mangaIdentifier: String) {
-        for (job in jobs.withIndex()) {
+        for (job in queue.jobs.withIndex()) {
             if (job.value.first == mangaIdentifier) {
                 job.value.second.cancel()
-                jobs.removeAt(job.index)
+                queue.jobs.removeAt(job.index)
                 break
             }
         }
@@ -761,84 +1051,11 @@ class DownloadManager(
 
                 val progress = (chapter.index * 100 / chapterList.size)
                 withContext(Dispatchers.Main) {
-                    val uiElement = uiElements[mangaIdentifier] ?: return@withContext
+                    val uiElement = queue.uiElements[mangaIdentifier] ?: return@withContext
                     uiElement.first.progress = progress
                     uiElement.second.text = "$progress%"
                 }
             }
-        }
-    }
-}
-
-
-/*class MangaDatabase {
-    private val dbConnection = Database.connect("jdbc:sqlite:manga.db", "org.sqlite.JDBC")
-
-    init {
-        TransactionManager.manager.defaultIsolationLevel = Connection.TRANSACTION_SERIALIZABLE
-        transaction(dbConnection) {
-            SchemaUtils.create(Info)
-            SchemaUtils.create(Mangas)
-            SchemaUtils.create(Records)
-            exec("CREATE INDEX IF NOT EXISTS idx_info_id ON mangas(info_id)")
-            exec("CREATE INDEX IF NOT EXISTS idx_identifier_page ON mangas (identifier, page);")
-            commit()
-        }
-    }
-
-    fun setPages(chapterIdentifier: String, mangaIdentifier: String, downloadedPage: List<Pair<Int, ByteArray>>) {
-        transaction {
-            val inInfos = Info.select(Info.identifier).where {Info.identifier eq mangaIdentifier}.singleOrNull()
-            var infoIdInDb: String? = null
-
-            if(inInfos != null){
-                infoIdInDb = mangaIdentifier
-            }
-
-            for (manga: Pair<Int, ByteArray> in downloadedPage) {
-                Mangas.insert {
-                    it[identifier] = chapterIdentifier
-                    it[page] = manga.first
-                    it[data] = ExposedBlob(manga.second)
-                    it[infoId] = infoIdInDb
-                }
-            }
-            commit()
-        }
-    }
-
-    fun setRecord(chapterIdentifier: String, pagesCount: Int) {
-        transaction {
-            Records.insert {
-                it[identifier] = chapterIdentifier
-                it[pages] = pagesCount
-            }
-            commit()
-        }
-    }
-
-    fun getChapterPages(chapterIdentifier: String): List<Int> {
-        val pagesInDb = mutableListOf<Int>()
-        transaction {
-            val pages = Mangas.select(Mangas.page).where { Mangas.identifier eq chapterIdentifier }
-                .mapTo(pagesInDb) { it[Mangas.page] }
-        }
-        return pagesInDb
-    }
-
-    fun setInfo(infoObject: InfoObject) {
-        transaction {
-            Info.insert {
-                it[identifier] = infoObject.identifier
-                it[name] = infoObject.name
-                it[description] = infoObject.description
-                it[cover] = infoObject.cover?.let { it1 -> ExposedBlob(it1) }
-                it[smallCover] = infoObject.smallCover?.let { it1 -> ExposedBlob(it1) }
-                it[mangaFormat] = infoObject.mangaFormat
-                it[mangaGenre] = infoObject.mangaGenre
-                it[contentRating] = infoObject.contentRating
-            }
-            commit()
         }
     }
 }*/

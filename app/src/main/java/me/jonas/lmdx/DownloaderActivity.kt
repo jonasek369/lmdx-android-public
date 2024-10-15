@@ -1,5 +1,9 @@
 package me.jonas.lmdx
 
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
 import android.opengl.Visibility
 import android.os.Bundle
 import android.view.LayoutInflater
@@ -9,6 +13,7 @@ import android.widget.Button
 import android.widget.ProgressBar
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
+import androidx.localbroadcastmanager.content.LocalBroadcastManager
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import androidx.room.Room
@@ -18,8 +23,9 @@ import kotlinx.coroutines.runBlocking
 class DownloaderAdapter(
     var downloadsList: MutableList<String>,
     private val database: MangaDatabase,
-    private val downloader: DownloadManager,
-    var removeStopButton: MutableList<String>
+    private val downloader: DownloaderQueue,
+    var removeStopButton: MutableList<String>,
+    var context: Context
 ) : RecyclerView.Adapter<DownloaderAdapter.DownloaderViewHolder>() {
 
     inner class DownloaderViewHolder(itemView: View) : RecyclerView.ViewHolder(itemView) {
@@ -32,11 +38,12 @@ class DownloaderAdapter(
         fun bind(mangaIdentifier: String) {
             println("binding item")
             runBlocking {
-                mangaTitle.text = database.infoDao.getTitle(mangaIdentifier)?.trim('"') ?: "Unknown title"
+                mangaTitle.text =
+                    database.infoDao.getTitle(mangaIdentifier)?.trim('"') ?: "Unknown title"
             }
             progressBar.max = 100
             downloader.uiElements[mangaIdentifier] = Pair(progressBar, percentageTextView)
-            if(removeStopButton.contains(mangaIdentifier)){
+            if (removeStopButton.contains(mangaIdentifier)) {
                 progressBar.progress = 100
                 percentageTextView.text = "Finished"
 
@@ -45,14 +52,16 @@ class DownloaderAdapter(
 
             stopButton.setOnClickListener {
                 downloader.uiElements.remove(mangaIdentifier)
-                downloader.removeDownload(mangaIdentifier)
+                downloader.removeDownload(mangaIdentifier, context)
                 removeItem(downloadsList.indexOf(mangaIdentifier))
             }
 
             removeButton.setOnClickListener {
                 downloader.uiElements.remove(mangaIdentifier)
-                downloader.removeDownload(mangaIdentifier)
-                removeStopButton.removeAt(removeStopButton.indexOf(mangaIdentifier))
+                downloader.removeDownload(mangaIdentifier, context)
+                if(removeStopButton.indexOf(mangaIdentifier) != -1) {
+                    removeStopButton.removeAt(removeStopButton.indexOf(mangaIdentifier))
+                }
                 removeItem(downloadsList.indexOf(mangaIdentifier))
             }
 
@@ -61,7 +70,8 @@ class DownloaderAdapter(
     }
 
     override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): DownloaderViewHolder {
-        val view = LayoutInflater.from(parent.context).inflate(R.layout.downloader_manga_items, parent, false)
+        val view = LayoutInflater.from(parent.context)
+            .inflate(R.layout.downloader_manga_items, parent, false)
         return DownloaderViewHolder(view)
     }
 
@@ -72,6 +82,7 @@ class DownloaderAdapter(
     override fun getItemCount(): Int {
         return downloadsList.size
     }
+
     fun removeItem(position: Int) {
         if (position != RecyclerView.NO_POSITION && position < downloadsList.size) {
             downloadsList.removeAt(position)
@@ -80,8 +91,7 @@ class DownloaderAdapter(
     }
 
     fun removeItem(mangaIdentifier: String) {
-        println("remove item $mangaIdentifier")
-        val position =downloadsList.indexOf(mangaIdentifier)
+        val position = downloadsList.indexOf(mangaIdentifier)
         if (position != RecyclerView.NO_POSITION && position < downloadsList.size) {
             downloadsList.removeAt(position)
             notifyItemRemoved(position)
@@ -93,13 +103,43 @@ class DownloaderAdapter(
         notifyItemChanged(downloadsList.indexOf(mangaIdentifier))
     }
 
+    fun onChange(mangaIdentifier: String) {
+        notifyItemChanged(downloadsList.indexOf(mangaIdentifier))
+    }
+
 }
 
 
 class DownloaderActivity : AppCompatActivity() {
     private lateinit var database: MangaDatabase
     private lateinit var connection: MangaDexConnection
-    private lateinit var downloader: DownloadManager
+    private lateinit var downloader: DownloaderQueue
+    private lateinit var adapter: DownloaderAdapter
+
+
+    private val progressReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            intent?.getStringExtra("identifier")?.let {
+                adapter.onChange(it)
+            }
+            intent?.getBooleanExtra("finished", false)?.let {
+                if(!it){
+                    return
+                }
+                intent.getStringExtra("identifier")?.let { identifier ->
+                    adapter.onFinish(identifier)
+                }
+            }
+        }
+    }
+
+    override fun onStart() {
+        super.onStart()
+        LocalBroadcastManager.getInstance(this)
+            .registerReceiver(progressReceiver, IntentFilter("DownloadProgress"))
+        // Bind to the service if needed
+    }
+
 
     override fun onCreate(savedInstanceState: Bundle?) {
         setTheme(R.style.Theme_NavigationDrawer)
@@ -114,24 +154,25 @@ class DownloaderActivity : AppCompatActivity() {
             "manga"
         ).build()
         connection = MangaDexConnection(database)
-        downloader = DownloadManager.getInstance(database)
+        downloader = DownloaderQueue.getInstance()
 
         val recyclerView: RecyclerView = findViewById(R.id.downloaderRecyclerView)
         recyclerView.layoutManager = LinearLayoutManager(this)
 
 
-        val identifiers: MutableList<String> = mutableListOf()
-        for(job in downloader.jobs){
-            identifiers.add(job.first)
+        val identifiers: MutableList<String> = downloader.jobs.toMutableList() // copy list
+        if(!downloader.currentlyWorkingOn.isNullOrEmpty()){
+            identifiers.add(downloader.currentlyWorkingOn!!)
         }
         println("adding $identifiers")
-        val recyclerAdapter = DownloaderAdapter(identifiers, database, downloader, mutableListOf())
+        val recyclerAdapter = DownloaderAdapter(identifiers, database, downloader, mutableListOf(), this)
         recyclerView.adapter = recyclerAdapter
-        downloader.setAdapter(recyclerAdapter)
+        adapter = recyclerAdapter
     }
 
     override fun onStop() {
         downloader.uiElements.clear()
         super.onStop()
+        LocalBroadcastManager.getInstance(this).unregisterReceiver(progressReceiver)
     }
 }

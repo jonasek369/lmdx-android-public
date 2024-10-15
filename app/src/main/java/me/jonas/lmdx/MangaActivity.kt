@@ -118,7 +118,7 @@ class MangaActivity : AppCompatActivity() {
     private lateinit var database: MangaDatabase
     private lateinit var connection: MangaDexConnection
 
-    private lateinit var downloader: DownloadManager
+    private lateinit var downloader: DownloaderQueue
 
 
     suspend fun getReadInfo(mangaId: String): List<String>?{
@@ -143,7 +143,7 @@ class MangaActivity : AppCompatActivity() {
             "manga"
         ).build()
 
-        downloader = DownloadManager.getInstance(database)
+        downloader = DownloaderQueue.getInstance()
         val recyclerView: RecyclerView = findViewById(R.id.recyclerviewChapters)
         recyclerView.layoutManager = LinearLayoutManager(this)
 
@@ -157,12 +157,7 @@ class MangaActivity : AppCompatActivity() {
         println("load data")
 
         button.setOnClickListener(){
-            for(job in downloader.jobs){
-                if(job.first == mangaId){
-                    return@setOnClickListener
-                }
-            }
-            downloader.downloadManga(mangaId)
+            downloader.addDownload(mangaId)
             button.visibility = View.INVISIBLE
         }
 
